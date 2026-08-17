@@ -1,0 +1,38 @@
+name: linarcel
+description: "Application Linarcel pour les vendeurs motorisés"
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.11.5
+
+dependencies:
+  android_alarm_manager_plus: ^5.0.0
+  background_fetch: ^1.7.0
+  flutter:
+    sdk: flutter
+  flutter_background_service: ^5.1.0
+  flutter_background_service_android: ^6.3.1
+  geolocator: ^14.0.2
+  geolocator_android: ^5.0.3
+  http: ^1.6.0
+  shared_preferences: ^2.5.5
+  toastification: ^3.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/logo-full.png
+
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/logo-full.png"
+  min_sdk_android: 21
