@@ -52,7 +52,7 @@ class AppToast {
           offset: Offset(0, 16),
         ),
       ],
-      showProgressBar: true,
+      showProgressBar: false,
       closeOnClick: false,
       pauseOnHover: true,
       dragToClose: true,

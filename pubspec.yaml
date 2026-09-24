@@ -11,12 +11,15 @@ dependencies:
   background_fetch: ^1.7.0
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
   flutter_background_service: ^5.1.0
   flutter_background_service_android: ^6.3.1
   geolocator: ^14.0.2
   geolocator_android: ^5.0.3
   http: ^1.6.0
   shared_preferences: ^2.5.5
+  shimmer: ^3.0.0
   toastification: ^3.2.0
 
 dev_dependencies:
@@ -30,9 +33,10 @@ flutter:
 
   assets:
     - assets/logo-full.png
+    - assets/logo.png
 
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
-  image_path: "assets/logo-full.png"
+  image_path: "assets/logo.png"
   min_sdk_android: 21
