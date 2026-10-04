@@ -16,7 +16,7 @@ import 'package:flutter_background_service_android/flutter_background_service_an
 
 // Configuration API - MODIFIEZ ICI UNIQUEMENT
 //const String API_BASE_URL = 'https://detection-fraude-python.onrender.com';
-const String API_BASE_URL = 'http://192.168.1.66:8080';
+const String API_BASE_URL = 'http://192.168.1.81:8080';
 
 // Zéro changement mobile : ce garde ne s'active QUE sur Web (Chrome).
 // Sur Android/iOS, isBgServiceSupported == true et tout le code existant tourne à l'identique.
@@ -224,9 +224,7 @@ Future<void> _collectAndMaybeSend({required bool force}) async {
     _lastSentTime = DateTime.now();
     await _persistLastPosition(position);
 
-    print(
-      '📍 Position validée: ${position.latitude}, ${position.longitude}',
-    );
+    print('📍 Position validée: ${position.latitude}, ${position.longitude}');
     await _sendLocationToBackend(position);
   } catch (e) {
     print('⚠️ Échec cycle polling: $e');
@@ -495,7 +493,7 @@ class _LoginPageState extends State<LoginPage> {
                   Container(
                     width: 120,
                     height: 120,
-                    clipBehavior: Clip.antiAlias, 
+                    clipBehavior: Clip.antiAlias,
                     decoration: BoxDecoration(
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(60),
@@ -657,9 +655,7 @@ class _LoginPageState extends State<LoginPage> {
                                 elevation: 2,
                               ),
                               child: Text(
-                                _isLoading
-                                    ? 'Connexion...'
-                                    : 'Se connecter',
+                                _isLoading ? 'Connexion...' : 'Se connecter',
                                 style: const TextStyle(
                                   fontSize: 16,
                                   fontWeight: FontWeight.w600,
@@ -769,13 +765,20 @@ class _HomePageState extends State<HomePage> {
   bool _isLoggedIn = true;
   bool _isTrackingActive = false;
   bool _isLocationLoading = false;
-  // Heure du point déclarée (chaque jour sauf dimanche, modifiable 15 min).
-  String? _heurePoint;
-  String? _heurePointDate;
-  DateTime? _heurePointExpireAt;
-  bool? _heurePointHorsPlage;
-  bool _heurePointLoading = false;
-  bool _heurePointSaving = false;
+  // Stock de début de journée (chaque jour sauf dimanche, modifiable 15 min).
+  int? _stockEspece;
+  int? _stockVirtuel;
+  String? _stockDate;
+  DateTime? _stockExpireAt;
+  bool _stockLoading = false;
+  bool _stockSaving = false;
+  // Controllers attachés au State (comme le dialogue « Changer mot de passe »)
+  // : un controller local détruit après showDialog est encore utilisé par les
+  // TextField pendant l'animation de sortie -> 'used after being disposed'.
+  late final TextEditingController _stockEspeceCtrl =
+      TextEditingController();
+  late final TextEditingController _stockVirtuelCtrl =
+      TextEditingController();
 
   @override
   void initState() {
@@ -797,17 +800,22 @@ class _HomePageState extends State<HomePage> {
     // Démarrer le suivi après un court délai pour que l'UI soit chargée
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _startLocationTracking();
-      _chargerHeurePoint();
+      _chargerStockJournee();
     });
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    _stockEspeceCtrl.dispose();
+    _stockVirtuelCtrl.dispose();
     super.dispose();
   }
 
   void _updateTime() {
+    // Rebuild chaque seconde : le compte à rebours 15 min du stock
+    // (format « Xmin YYs ») se décrémente en temps réel, et le bouton
+    // « Modifier… » disparaît dès que la fenêtre de 15 min est écoulée.
     setState(() {
       _currentTime = _formatDate(DateTime.now());
     });
@@ -817,11 +825,11 @@ class _HomePageState extends State<HomePage> {
     return '${date.day}/${date.month}/${date.year} - ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
   }
 
-  /// Pull-to-refresh : recharge le profil + l'heure du point en parallèle.
+  /// Pull-to-refresh : recharge le profil + le stock en parallèle.
   /// L'indicateur natif reste visible jusqu'à la fin des deux chargements.
   Future<void> _rafraichir() async {
     _updateTime();
-    await Future.wait([_loadVmInfo(), _chargerHeurePoint()]);
+    await Future.wait([_loadVmInfo(), _chargerStockJournee()]);
   }
 
   Future<void> _loadVmInfo() async {
@@ -834,39 +842,52 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
-  // --- Heure du point (déclarée chaque jour sauf dimanche) ---
+  // --- Helpers date (partagés : stock de début de journée) ---
   bool _isDimanche() => DateTime.now().weekday == DateTime.sunday;
-  //bool _isDimanche() => false; 
+  //bool _isDimanche() => false;
 
   String _dateJourStr() {
     final now = DateTime.now();
     return '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}';
   }
 
-  bool get _heurePointModifiable {
-    if (_heurePoint == null || _heurePointExpireAt == null) return _heurePoint == null;
-    return DateTime.now().isBefore(_heurePointExpireAt!);
+  // --- Stock de début de journée (déclaré chaque jour sauf dimanche) ---
+  bool get _stockModifiable {
+    if (_stockEspece == null || _stockExpireAt == null)
+      return _stockEspece == null;
+    return DateTime.now().isBefore(_stockExpireAt!);
   }
 
-  String _resteEditStr() {
-    if (_heurePointExpireAt == null) return '';
-    final reste = _heurePointExpireAt!.difference(DateTime.now());
+  String _resteStockEditStr() {
+    if (_stockExpireAt == null) return '';
+    final reste = _stockExpireAt!.difference(DateTime.now());
     if (reste.isNegative) return 'verrouillée';
     final mm = reste.inMinutes;
     final ss = reste.inSeconds % 60;
     return 'modifiable encore ${mm}min ${ss.toString().padLeft(2, '0')}s';
   }
 
-  Future<void> _chargerHeurePoint() async {
+  String _formaterMontant(int? v) {
+    if (v == null) return '—';
+    final s = v.toString();
+    final buf = StringBuffer();
+    for (int i = 0; i < s.length; i++) {
+      if (i > 0 && (s.length - i) % 3 == 0) buf.write(' ');
+      buf.write(s[i]);
+    }
+    return '${buf.toString()} FCFA';
+  }
+
+  Future<void> _chargerStockJournee() async {
     if (_isDimanche()) return;
     try {
       final prefs = await SharedPreferences.getInstance();
       final vmId = prefs.getString('vm_id');
       final token = prefs.getString('token');
       if (vmId == null || token == null) return;
-      if (mounted) setState(() => _heurePointLoading = true);
+      if (mounted) setState(() => _stockLoading = true);
       final dateStr = _dateJourStr();
-      final uri = Uri.parse('$API_BASE_URL/api/vm/heure-point').replace(
+      final uri = Uri.parse('$API_BASE_URL/api/vm/stock-journee').replace(
         queryParameters: {'vm_id': vmId, 'token': token, 'date': dateStr},
       );
       final response = await http.get(uri).timeout(const Duration(seconds: 10));
@@ -874,116 +895,203 @@ class _HomePageState extends State<HomePage> {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         setState(() {
-          _heurePointLoading = false;
+          _stockLoading = false;
           if (data['exists'] == true) {
-            _heurePoint = data['heure_point']?.toString();
-            _heurePointDate = data['date']?.toString();
+            _stockEspece = (data['stock_espece'] as num?)?.toInt();
+            _stockVirtuel = (data['stock_virtuel'] as num?)?.toInt();
+            _stockDate = data['date']?.toString();
             final exp = data['modifiable_jusqu_a']?.toString();
-            _heurePointExpireAt = exp != null ? DateTime.tryParse(exp)?.toLocal() : null;
+            _stockExpireAt = exp != null
+                ? DateTime.tryParse(exp)?.toLocal()
+                : null;
           } else {
-            _heurePoint = null;
-            _heurePointDate = dateStr;
-            _heurePointExpireAt = null;
+            _stockEspece = null;
+            _stockVirtuel = null;
+            _stockDate = dateStr;
+            _stockExpireAt = null;
           }
         });
       } else {
-        if (mounted) setState(() => _heurePointLoading = false);
+        if (mounted) setState(() => _stockLoading = false);
       }
     } catch (_) {
-      if (mounted) setState(() => _heurePointLoading = false);
+      if (mounted) setState(() => _stockLoading = false);
     }
   }
 
-  Future<void> _choisirHeurePoint() async {
+  Future<void> _saisirStockJournee() async {
     if (_isDimanche()) return;
-    final picked = await showTimePicker(
+    // Clavier interne du téléphone, exactement comme le dialogue
+    // « Changer mot de passe » : TextField + SingleChildScrollView, et
+    // controllers portés par le State (jamais détruits à la fermeture).
+    _stockEspeceCtrl.text = _stockEspece != null ? '$_stockEspece' : '';
+    _stockVirtuelCtrl.text = _stockVirtuel != null ? '$_stockVirtuel' : '';
+
+    final ok = await showDialog<bool>(
       context: context,
-      initialTime: TimeOfDay.now(),
-      helpText: 'Heure de votre point à l\'agence',
-      // Français 24h : 15:30 au lieu de 3:30 PM, quel que soit le téléphone.
-      builder: (context, child) => MediaQuery(
-      data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: true),
-      child: Theme(
-        data: Theme.of(context).copyWith(
-          timePickerTheme: const TimePickerThemeData(
-            hourMinuteTextStyle: TextStyle(fontSize: 40, fontWeight: FontWeight.bold),
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.inventory_2_outlined,
+                color: Color(0xFFea5429), size: 22),
+            SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Stock de début de journée',
+                style: TextStyle(
+                  color: Color(0xFF233360),
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: _stockEspeceCtrl,
+                keyboardType: TextInputType.numberWithOptions(
+                    signed: false, decimal: false),
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                decoration: const InputDecoration(
+                  labelText: 'Stock espèce (FCFA)',
+                  hintText: 'Ex: 150000',
+                  prefixIcon: Icon(Icons.payments, color: Color(0xFFea5429)),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _stockVirtuelCtrl,
+                keyboardType: TextInputType.numberWithOptions(
+                    signed: false, decimal: false),
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                decoration: const InputDecoration(
+                  labelText: 'Stock virtuel (FCFA)',
+                  hintText: 'Ex: 500000',
+                  prefixIcon:
+                      Icon(Icons.phone_iphone, color: Color(0xFFea5429)),
+                ),
+              ),
+            ],
           ),
         ),
-        child: child!,
+        actions: [
+          TextButton(
+            // On retire le focus AVANT de fermer : sinon l'EditableText est
+            // encore actif pendant l'animation de sortie et le controller est
+            // jeté trop tôt -> '_dependents.isEmpty' / 'dirty widget'.
+            onPressed: () {
+              FocusScope.of(ctx).unfocus();
+              Navigator.of(ctx).pop(false);
+            },
+            child: const Text(
+              'Annuler',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
+          const SizedBox(width: 4),
+          ElevatedButton(
+            onPressed: () {
+              FocusScope.of(ctx).unfocus();
+              Navigator.of(ctx).pop(true);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFea5429),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            child: const Text('Valider'),
+          ),
+        ],
       ),
-),
     );
-    if (picked == null || !mounted) return;
-    // Refuser les heures futures : on ne déclare que l'heure actuelle ou passée.
-    final now = TimeOfDay.now();
-    if (picked.hour * 60 + picked.minute > now.hour * 60 + now.minute) {
-      final heureActuelle =
-          '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+
+    final saisieEspece = _stockEspeceCtrl.text.trim();
+    final saisieVirtuel = _stockVirtuelCtrl.text.trim();
+    if (ok != true || !mounted) return;
+    final espece =
+        int.tryParse(saisieEspece.isEmpty ? '0' : saisieEspece);
+    final virtuel =
+        int.tryParse(saisieVirtuel.isEmpty ? '0' : saisieVirtuel);
+    if (espece == null || espece < 0 || virtuel == null || virtuel < 0) {
       AppToast.showError(
         context,
-        title: 'Heure invalide',
-        description:
-            'Il est $heureActuelle : vous ne pouvez pas déclarer une heure future.',
+        title: 'Montants invalides',
+        description: 'Saisissez deux montants entiers (FCFA).',
       );
       return;
     }
-    await _enregistrerHeurePoint(picked);
+    await _enregistrerStockJournee(espece, virtuel);
   }
 
-  Future<void> _enregistrerHeurePoint(TimeOfDay tod) async {
+  Future<void> _enregistrerStockJournee(int espece, int virtuel) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final vmId = prefs.getString('vm_id');
       final token = prefs.getString('token');
       if (vmId == null || token == null) {
-        AppToast.showError(context, title: 'Session invalide', description: 'Reconnectez-vous.');
+        AppToast.showError(
+          context,
+          title: 'Session invalide',
+          description: 'Reconnectez-vous.',
+        );
         return;
       }
-      setState(() => _heurePointSaving = true);
-      final heureStr =
-          '${tod.hour.toString().padLeft(2, '0')}:${tod.minute.toString().padLeft(2, '0')}';
+      setState(() => _stockSaving = true);
       final response = await http
           .post(
-            Uri.parse('$API_BASE_URL/api/vm/heure-point'),
+            Uri.parse('$API_BASE_URL/api/vm/stock-journee'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'vm_id': int.parse(vmId),
               'token': token,
-              'heure_point': heureStr,
+              'stock_espece': espece,
+              'stock_virtuel': virtuel,
               'date': _dateJourStr(),
             }),
           )
           .timeout(const Duration(seconds: 15));
       if (!mounted) return;
-      setState(() => _heurePointSaving = false);
+      setState(() => _stockSaving = false);
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         setState(() {
-          _heurePoint = data['heure_point']?.toString() ?? heureStr;
-          _heurePointDate = data['date']?.toString() ?? _dateJourStr();
+          _stockEspece = (data['stock_espece'] as num?)?.toInt() ?? espece;
+          _stockVirtuel = (data['stock_virtuel'] as num?)?.toInt() ?? virtuel;
+          _stockDate = data['date']?.toString() ?? _dateJourStr();
           final exp = data['modifiable_jusqu_a']?.toString();
-          _heurePointExpireAt = exp != null ? DateTime.tryParse(exp)?.toLocal() : null;
-          _heurePointHorsPlage = data['hors_plage'] == true;
+          _stockExpireAt = exp != null
+              ? DateTime.tryParse(exp)?.toLocal()
+              : null;
         });
         AppToast.showSuccess(
           context,
-          title: 'Heure du point enregistrée',
-          description: _heurePointHorsPlage == true
-              ? 'Point à $_heurePoint (hors 12h-16h : alerte envoyée à la centrale).'
-              : 'Point à $_heurePoint. Modifiable pendant 15 min.',
+          title: 'Stock enregistré',
+          description: 'Modifiable pendant 15 min en cas d\'erreur.',
         );
       } else {
-        String message = 'Impossible d\'enregistrer l\'heure.';
+        String message = 'Impossible d\'enregistrer le stock.';
         try {
           final err = jsonDecode(response.body);
-          if (err is Map && err['detail'] != null) message = err['detail'].toString();
+          if (err is Map && err['detail'] != null)
+            message = err['detail'].toString();
         } catch (_) {}
         AppToast.showError(context, title: 'Erreur', description: message);
       }
     } catch (e) {
       if (mounted) {
-        setState(() => _heurePointSaving = false);
-        AppToast.showError(context, title: 'Erreur', description: 'Une erreur est survenue. Veuillez réessayer.');
+        setState(() => _stockSaving = false);
+        AppToast.showError(
+          context,
+          title: 'Erreur',
+          description: 'Une erreur est survenue. Veuillez réessayer.',
+        );
       }
     }
   }
@@ -1020,7 +1128,7 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Widget _buildHeurePointCard() {
+  Widget _buildStockJourneeCard() {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -1040,11 +1148,11 @@ class _HomePageState extends State<HomePage> {
           children: [
             const Row(
               children: [
-                Icon(Icons.access_time, color: Color(0xFF233360), size: 24),
+                Icon(Icons.inventory_2, color: Color(0xFF233360), size: 24),
                 SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    'Heure du point',
+                    'Stock début de journée',
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
@@ -1057,11 +1165,10 @@ class _HomePageState extends State<HomePage> {
             const SizedBox(height: 8),
             if (_isDimanche())
               const Text(
-                'Pas de point le dimanche. Reprise demain.',
+                'Pas de saisie le dimanche. Reprise demain.',
                 style: TextStyle(fontSize: 13, color: Colors.grey, height: 1.4),
               )
-            else if (_heurePointLoading)
-              // Shimmer qui mime les lignes de texte attendues (pas de spinner).
+            else if (_stockLoading)
               Shimmer.fromColors(
                 baseColor: Colors.grey.shade300,
                 highlightColor: Colors.grey.shade100,
@@ -1088,67 +1195,76 @@ class _HomePageState extends State<HomePage> {
                   ],
                 ),
               )
-            else if (_heurePoint == null)
+            else if (_stockEspece == null)
               const Text(
-                'Après votre point à l\'agence, déclarez ici l\'heure (et minutes) du point du jour.',
+                'Déclarez ici votre stock de début de journée (espèce + virtuel).',
                 style: TextStyle(fontSize: 13, color: Colors.grey, height: 1.4),
               )
             else
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF233360).withOpacity(0.08),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Text(
-                          '$_heurePoint${_heurePointDate != null ? '  •  $_heurePointDate' : ''}',
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFF233360),
-                            fontFamily: 'monospace',
-                          ),
-                        ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF233360).withOpacity(0.08),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      'Espèce : ${_formaterMontant(_stockEspece)}  •  Virtuel : ${_formaterMontant(_stockVirtuel)}${_stockDate != null ? '  •  $_stockDate' : ''}',
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF233360),
+                        fontFamily: 'monospace',
                       ),
-                    ],
+                    ),
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    _heurePointModifiable
-                        ? 'Déclaré — ${_resteEditStr()} en cas d\'erreur.'
-                        : 'Déclaré — saisie ${_resteEditStr()}.',
+                    _stockModifiable
+                        ? 'Déclaré — ${_resteStockEditStr()} en cas d\'erreur.'
+                        : 'Déclaré — saisie ${_resteStockEditStr()}.',
                     style: const TextStyle(fontSize: 12, color: Colors.grey),
                   ),
-                  
                 ],
               ),
-            if (!_isDimanche() && (_heurePoint == null || _heurePointModifiable)) ...[
+            if (!_isDimanche() &&
+                (_stockEspece == null || _stockModifiable)) ...[
               const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,
                 height: 50,
                 child: ElevatedButton.icon(
-                  onPressed: _heurePointSaving ? null : _choisirHeurePoint,
-                  icon: _heurePointSaving
+                  onPressed: _stockSaving ? null : _saisirStockJournee,
+                  icon: _stockSaving
                       ? const SizedBox(
                           width: 18,
                           height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
                         )
-                      : const Icon(Icons.schedule, size: 20),
+                      : const Icon(Icons.inventory_2, size: 20),
                   label: Text(
-                    _heurePoint == null ? 'Déclarer l\'heure du point' : 'Modifier l\'heure',
-                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                    _stockEspece == null
+                        ? 'Déclarer mon stock'
+                        : 'Modifier le stock',
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFFea5429),
                     foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                     elevation: 2,
                   ),
                 ),
@@ -1191,283 +1307,287 @@ class _HomePageState extends State<HomePage> {
           // Permet de tirer vers le bas même quand le contenu est court.
           physics: const AlwaysScrollableScrollPhysics(),
           child: Column(
-          children: [
-            // Header avec gradient
-            Container(
-              width: double.infinity,
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Color(0xFF233360), Color(0xFFea5429)],
+            children: [
+              // Header avec gradient
+              Container(
+                width: double.infinity,
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xFF233360), Color(0xFFea5429)],
+                  ),
+                  borderRadius: BorderRadius.only(
+                    bottomLeft: Radius.circular(30),
+                    bottomRight: Radius.circular(30),
+                  ),
                 ),
-                borderRadius: BorderRadius.only(
-                  bottomLeft: Radius.circular(30),
-                  bottomRight: Radius.circular(30),
-                ),
-              ),
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Container(
-                        width: 40,
-                        height: 40,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(30),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.1),
-                              blurRadius: 10,
-                            ),
-                          ],
-                        ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(30),
-                          child: Container(
-                            color: const Color(0xFFF1F5F9),
-                            padding: const EdgeInsets.all(8.0),
-                            child: const Icon(
-                              Icons.person_rounded,
-                              color: Color(0xFF475569),
-                              size: 24,
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(30),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.1),
+                                blurRadius: 10,
+                              ),
+                            ],
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(30),
+                            child: Container(
+                              color: const Color(0xFFF1F5F9),
+                              padding: const EdgeInsets.all(8.0),
+                              child: const Icon(
+                                Icons.person_rounded,
+                                color: Color(0xFF475569),
+                                size: 24,
+                              ),
                             ),
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: _vmInfoLoading
-                            // Shimmer qui mime les lignes nom + numéro (pas de spinner).
-                            ? Shimmer.fromColors(
-                                baseColor: Colors.white.withOpacity(0.4),
-                                highlightColor: Colors.white.withOpacity(0.9),
-                                child: Column(
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: _vmInfoLoading
+                              // Shimmer qui mime les lignes nom + numéro (pas de spinner).
+                              ? Shimmer.fromColors(
+                                  baseColor: Colors.white.withOpacity(0.4),
+                                  highlightColor: Colors.white.withOpacity(0.9),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Container(
+                                        height: 16,
+                                        width: 140,
+                                        decoration: BoxDecoration(
+                                          color: Colors.white,
+                                          borderRadius: BorderRadius.circular(
+                                            6,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Container(
+                                        height: 13,
+                                        width: 100,
+                                        decoration: BoxDecoration(
+                                          color: Colors.white,
+                                          borderRadius: BorderRadius.circular(
+                                            6,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                )
+                              : Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Container(
-                                      height: 16,
-                                      width: 140,
-                                      decoration: BoxDecoration(
+                                    Text(
+                                      _vmNom,
+                                      style: const TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
                                         color: Colors.white,
-                                        borderRadius: BorderRadius.circular(6),
                                       ),
                                     ),
-                                    const SizedBox(height: 6),
-                                    Container(
-                                      height: 13,
-                                      width: 100,
-                                      decoration: BoxDecoration(
-                                        color: Colors.white,
-                                        borderRadius: BorderRadius.circular(6),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      _vmNumero,
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        color: Colors.white70,
+                                        fontFamily: 'monospace',
                                       ),
                                     ),
                                   ],
                                 ),
-                              )
-                            : Column(
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+              // Section Information
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Column(
+                  children: [
+                    // Carte d'information principale
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.grey.withOpacity(0.1),
+                            blurRadius: 10,
+                            offset: const Offset(0, 5),
+                          ),
+                        ],
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              _vmNom,
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white,
+                            Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(
+                                    color: const Color(
+                                      0xFF233360,
+                                    ).withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: const Icon(
+                                    Icons.verified_user,
+                                    color: Color(0xFF233360),
+                                    size: 24,
+                                  ),
+                                ),
+                                const SizedBox(width: 16),
+                                const Expanded(
+                                  child: Text(
+                                    'Bienvenue sur l\'application Linarcel',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF233360),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                            const Text(
+                              'Pour garantir la bonne organisation de votre secteur, merci de renseigner rigoureusement vos heures de pointage en agence.',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.grey,
+                                height: 1.4,
                               ),
                             ),
-                            const SizedBox(height: 4),
-                            Text(
-                              _vmNumero,
-                              style: const TextStyle(
-                                fontSize: 14,
-                                color: Colors.white70,
-                                fontFamily: 'monospace',
+                            const SizedBox(height: 16),
+                            const Divider(),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                const Icon(
+                                  Icons.access_time,
+                                  size: 16,
+                                  color: Colors.grey,
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'Dernière connexion: $_currentTime',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    // Carte stock de début de journée (déclarée chaque jour sauf dimanche)
+                    _buildStockJourneeCard(),
+                    const SizedBox(height: 16),
+                    // Carte changement de mot de passe
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.grey.withOpacity(0.1),
+                            blurRadius: 10,
+                            offset: const Offset(0, 5),
+                          ),
+                        ],
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Row(
+                              children: [
+                                Icon(
+                                  Icons.lock_reset,
+                                  color: Color(0xFF233360),
+                                  size: 24,
+                                ),
+                                SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    'Sécurité du compte',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFF233360),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              'Modifiez régulièrement votre mot de passe pour protéger votre compte.',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.grey,
+                                height: 1.4,
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            SizedBox(
+                              width: double.infinity,
+                              height: 50,
+                              child: ElevatedButton.icon(
+                                onPressed: _showChangePasswordDialog,
+                                icon: const Icon(Icons.lock_outline, size: 20),
+                                label: const Text(
+                                  'Changer mon mot de passe',
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF233360),
+                                  foregroundColor: Colors.white,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  elevation: 2,
+                                ),
                               ),
                             ),
                           ],
                         ),
                       ),
-                    ],
-                  ),
-                  
-                ],
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(height: 20),
-            // Section Information
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Column(
-                children: [
-                  // Carte d'information principale
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.grey.withOpacity(0.1),
-                          blurRadius: 10,
-                          offset: const Offset(0, 5),
-                        ),
-                      ],
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(20),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.all(10),
-                                decoration: BoxDecoration(
-                                  color: const Color(
-                                    0xFF233360,
-                                  ).withOpacity(0.1),
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: const Icon(
-                                  Icons.verified_user,
-                                  color: Color(0xFF233360),
-                                  size: 24,
-                                ),
-                              ),
-                              const SizedBox(width: 16),
-                              const Expanded(
-                                child: Text(
-                                  'Bienvenue sur l\'application Linarcel',
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF233360),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 16),
-                          const Text(
-                            'Pour garantir la bonne organisation de votre secteur, merci de renseigner rigoureusement vos heures de pointage en agence.',
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: Colors.grey,
-                              height: 1.4,
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          const Divider(),
-                          const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              const Icon(
-                                Icons.access_time,
-                                size: 16,
-                                color: Colors.grey,
-                              ),
-                              const SizedBox(width: 8),
-                              Text(
-                                'Dernière connexion: $_currentTime',
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.grey,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  // Carte heure du point (déclarée chaque jour sauf dimanche)
-                  _buildHeurePointCard(),
-                  const SizedBox(height: 16),
-                  // Carte changement de mot de passe
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.grey.withOpacity(0.1),
-                          blurRadius: 10,
-                          offset: const Offset(0, 5),
-                        ),
-                      ],
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(20),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Row(
-                            children: [
-                              Icon(
-                                Icons.lock_reset,
-                                color: Color(0xFF233360),
-                                size: 24,
-                              ),
-                              SizedBox(width: 12),
-                              Expanded(
-                                child: Text(
-                                  'Sécurité du compte',
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                    color: Color(0xFF233360),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          const Text(
-                            'Modifiez régulièrement votre mot de passe pour protéger votre compte.',
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: Colors.grey,
-                              height: 1.4,
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          SizedBox(
-                            width: double.infinity,
-                            height: 50,
-                            child: ElevatedButton.icon(
-                              onPressed: _showChangePasswordDialog,
-                              icon: const Icon(Icons.lock_outline, size: 20),
-                              label: const Text(
-                                'Changer mon mot de passe',
-                                style: TextStyle(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFF233360),
-                                foregroundColor: Colors.white,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                elevation: 2,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                ],
-              ),
-            ),
-          ],
-        ),
+            ],
+          ),
         ),
       ),
       bottomNavigationBar: Container(
@@ -1552,10 +1672,7 @@ class _HomePageState extends State<HomePage> {
               ),
               title: Row(
                 children: [
-                  Icon(
-                    Icons.logout,
-                    color: const Color(0xFFea5429),
-                  ),
+                  Icon(Icons.logout, color: const Color(0xFFea5429)),
                   const SizedBox(width: 12),
                   const Text(
                     'Déconnexion',
@@ -1606,7 +1723,8 @@ class _HomePageState extends State<HomePage> {
                             : () async {
                                 setDialogState(() => isLoading = true);
 
-                                final prefs = await SharedPreferences.getInstance();
+                                final prefs =
+                                    await SharedPreferences.getInstance();
                                 final logoutVmId = prefs.getString('vm_id');
                                 final logoutToken = prefs.getString('token');
                                 if (logoutVmId != null && logoutToken != null) {
@@ -1614,7 +1732,9 @@ class _HomePageState extends State<HomePage> {
                                     await http
                                         .post(
                                           Uri.parse('$API_BASE_URL/api/logout'),
-                                          headers: {'Content-Type': 'application/json'},
+                                          headers: {
+                                            'Content-Type': 'application/json',
+                                          },
                                           body: jsonEncode({
                                             'vm_id': int.parse(logoutVmId),
                                             'token': logoutToken,
@@ -1642,7 +1762,9 @@ class _HomePageState extends State<HomePage> {
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFFea5429),
                           foregroundColor: Colors.white,
-                          disabledBackgroundColor: const Color(0xFFea5429).withOpacity(0.6),
+                          disabledBackgroundColor: const Color(
+                            0xFFea5429,
+                          ).withOpacity(0.6),
                           disabledForegroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(
                             horizontal: 20,
@@ -1781,7 +1903,8 @@ class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
       AppToast.showError(
         context,
         title: 'Mot de passe trop court',
-        description: 'Le nouveau mot de passe doit contenir au moins 4 caractères.',
+        description:
+            'Le nouveau mot de passe doit contenir au moins 4 caractères.',
       );
       return;
     }
@@ -1789,7 +1912,8 @@ class _ChangePasswordDialogState extends State<_ChangePasswordDialog> {
       AppToast.showError(
         context,
         title: 'Confirmation différente',
-        description: 'La confirmation ne correspond pas au nouveau mot de passe.',
+        description:
+            'La confirmation ne correspond pas au nouveau mot de passe.',
       );
       return;
     }
