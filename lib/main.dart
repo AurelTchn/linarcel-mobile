@@ -15,8 +15,8 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_background_service_android/flutter_background_service_android.dart';
 
 // Configuration API - MODIFIEZ ICI UNIQUEMENT
-//const String API_BASE_URL = 'https://detection-fraude-python.onrender.com';
-const String API_BASE_URL = 'http://192.168.1.81:8080';
+const String API_BASE_URL = 'https://detection-fraude-python.onrender.com';
+// const String API_BASE_URL = 'http://192.168.1.81:8080';
 
 // Zéro changement mobile : ce garde ne s'active QUE sur Web (Chrome).
 // Sur Android/iOS, isBgServiceSupported == true et tout le code existant tourne à l'identique.
@@ -775,10 +775,8 @@ class _HomePageState extends State<HomePage> {
   // Controllers attachés au State (comme le dialogue « Changer mot de passe »)
   // : un controller local détruit après showDialog est encore utilisé par les
   // TextField pendant l'animation de sortie -> 'used after being disposed'.
-  late final TextEditingController _stockEspeceCtrl =
-      TextEditingController();
-  late final TextEditingController _stockVirtuelCtrl =
-      TextEditingController();
+  late final TextEditingController _stockEspeceCtrl = TextEditingController();
+  late final TextEditingController _stockVirtuelCtrl = TextEditingController();
 
   @override
   void initState() {
@@ -933,8 +931,11 @@ class _HomePageState extends State<HomePage> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Row(
           children: [
-            Icon(Icons.inventory_2_outlined,
-                color: Color(0xFFea5429), size: 22),
+            Icon(
+              Icons.inventory_2_outlined,
+              color: Color(0xFFea5429),
+              size: 22,
+            ),
             SizedBox(width: 12),
             Expanded(
               child: Text(
@@ -955,7 +956,9 @@ class _HomePageState extends State<HomePage> {
               TextField(
                 controller: _stockEspeceCtrl,
                 keyboardType: TextInputType.numberWithOptions(
-                    signed: false, decimal: false),
+                  signed: false,
+                  decimal: false,
+                ),
                 inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                 decoration: const InputDecoration(
                   labelText: 'Stock espèce (FCFA)',
@@ -967,13 +970,17 @@ class _HomePageState extends State<HomePage> {
               TextField(
                 controller: _stockVirtuelCtrl,
                 keyboardType: TextInputType.numberWithOptions(
-                    signed: false, decimal: false),
+                  signed: false,
+                  decimal: false,
+                ),
                 inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                 decoration: const InputDecoration(
                   labelText: 'Stock virtuel (FCFA)',
                   hintText: 'Ex: 500000',
-                  prefixIcon:
-                      Icon(Icons.phone_iphone, color: Color(0xFFea5429)),
+                  prefixIcon: Icon(
+                    Icons.phone_iphone,
+                    color: Color(0xFFea5429),
+                  ),
                 ),
               ),
             ],
@@ -1015,10 +1022,8 @@ class _HomePageState extends State<HomePage> {
     final saisieEspece = _stockEspeceCtrl.text.trim();
     final saisieVirtuel = _stockVirtuelCtrl.text.trim();
     if (ok != true || !mounted) return;
-    final espece =
-        int.tryParse(saisieEspece.isEmpty ? '0' : saisieEspece);
-    final virtuel =
-        int.tryParse(saisieVirtuel.isEmpty ? '0' : saisieVirtuel);
+    final espece = int.tryParse(saisieEspece.isEmpty ? '0' : saisieEspece);
+    final virtuel = int.tryParse(saisieVirtuel.isEmpty ? '0' : saisieVirtuel);
     if (espece == null || espece < 0 || virtuel == null || virtuel < 0) {
       AppToast.showError(
         context,
